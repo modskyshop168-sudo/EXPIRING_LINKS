@@ -1,14 +1,7 @@
-/**
- * Cloudflare Worker: Short.io Expired Link Cleanup Cron
- * * ⚠️ 警告: 此版本已将 API 密钥硬编码到代码中。
- * * 必须的 Cloudflare Bindings:
- * 1. KV Namespace: 变量名必须是 EXPIRING_LINKS (与您的 wrangler.toml 匹配)
- */
+// [REPLACE ALL contents of index.js with this]
 export default {
     
-    // 定时任务入口点
     async scheduled(controller, env, ctx) {
-        
         // === ⚙️ 配置区 (硬编码 API Key) ===
         const SHORTIO_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU";
         // ===================================
@@ -16,10 +9,8 @@ export default {
         ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY));
     },
 
-    // 清理逻辑
     async handleCleanup(env, shortioSecretKey) {
         
-        // 1. 检查必要条件
         if (!env.EXPIRING_LINKS) {
             console.error("Cleanup aborted: KV Namespace 'EXPIRING_LINKS' is not bound.");
             return;
@@ -29,11 +20,77 @@ export default {
             return;
         }
 
-        // 2. 获取当前时间 (UTC+8)
         const localOffset = 8 * 60 * 60 * 1000; 
         const nowLocal = Date.now() + localOffset;
 
         console.log(`Starting scheduled cleanup job. Current time (UTC+8): ${new Date(nowLocal).toISOString()}`);
+        
+        let cursor = null;
+        let linksToDelete = [];
+        let deletedCount = 0;
+        
+        try { 
+            do {
+                const listOptions = {
+                    limit: 100,
+                    cursor: cursor
+                };
+                const list = await env.EXPIRING_LINKS.list(listOptions);
+                
+                for (const key of list.keys) {
+                    const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                    
+                    if (linkData && linkData.exp) {
+                        if (linkData.exp < nowLocal) {
+                            linksToDelete.push({ 
+                                path: key.name,
+                                shortURL: linkData.shortURL,
+                                uid: linkData.uid 
+                            });
+                        }
+                    } else {
+                        await env.EXPIRING_LINKS.delete(key.name);
+                    }
+                }
+
+                cursor = list.cursor;
+            } while (list.list_complete === false);
+        } catch (e) {
+            console.error("Error during KV listing/reading:", e);
+            linksToDelete = []; 
+        }
+
+        console.log(`Found ${linksToDelete.length} links to process.`);
+
+        const deletionPromises = linksToDelete.map(async (link) => {
+            const shortioDeleteURL = `https://api.short.io/links/${link.shortURL}`;
+
+            try {
+                const res = await fetch(shortioDeleteURL, {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: shortioSecretKey,
+                    }
+                });
+
+                if (res.ok || res.status === 204 || res.status === 404) {
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                    console.log(`✅ Success: Deleted link ${link.shortURL}`);
+                } else {
+                    const errorText = await res.text();
+                    console.error(`❌ Failed to delete link ${link.shortURL}. Status: ${res.status}. Error: ${errorText}`);
+                }
+            } catch (e) {
+                console.error(`❌ Network/API Error for ${link.shortURL}:`, e.message);
+            }
+        });
+
+        await Promise.all(deletionPromises);
+        
+        console.log(`Cleanup job completed. Total links deleted: ${deletedCount}`);
+    }
+};
         
         // 3. 逐页获取 KV 中的所有链接元数据
         let cursor = null;
