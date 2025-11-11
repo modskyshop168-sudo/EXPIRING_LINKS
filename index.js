@@ -1,23 +1,11 @@
-/**
- * Cloudflare Worker: Short.io Expired Link Cleanup Cron
- *
- * ⚠️ 警告: 此版本已将 API 密钥硬编码到代码中。
- *
- * 必须的 Cloudflare Bindings:
- * 1. KV Namespace: 变量名必须是 EXPIRING_LINKS (绑定到链接生成 Worker 写入的同一个实例)
- */
+// [确保这段代码是您 index.js 文件的全部内容]
 export default {
-    /**
-     * scheduled 函数是 Cron Trigger 触发时的入口点。
-     */
+    
     async scheduled(controller, env, ctx) {
-        
         // === ⚙️ 配置区 (硬编码 API Key) ===
-        // ⚠️ 警告: 密钥已硬编码，存在安全风险。
         const SHORTIO_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU";
-        // ===================================================
+        // ===================================
         
-        // 使用 ctx.waitUntil 确保 Worker 在所有异步任务完成之前不会退出
         ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY));
     },
 
@@ -29,11 +17,85 @@ export default {
             return;
         }
         if (!shortioSecretKey) {
-            console.error("Cleanup aborted: Short.io API Key is missing (should not happen in this version).");
+            console.error("Cleanup aborted: Short.io API Key is missing.");
             return;
         }
 
-        // 2. 获取当前时间 (UTC+8，用于和 exp 时间戳比较)
+        // 2. 获取当前时间 (UTC+8)
+        const localOffset = 8 * 60 * 60 * 1000; 
+        const nowLocal = Date.now() + localOffset;
+
+        console.log(`Starting scheduled cleanup job. Current time (UTC+8): ${new Date(nowLocal).toISOString()}`);
+        
+        // 3. 逐页获取 KV 中的所有链接元数据
+        let cursor = null;
+        let linksToDelete = [];
+        let deletedCount = 0;
+        
+        try { // 添加 try-catch 确保 KV 列表操作的健壮性
+            do {
+                const listOptions = {
+                    limit: 100,
+                    cursor: cursor
+                };
+                const list = await env.EXPIRING_LINKS.list(listOptions);
+                
+                for (const key of list.keys) {
+                    const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                    
+                    if (linkData && linkData.exp) {
+                        if (linkData.exp < nowLocal) {
+                            linksToDelete.push({ 
+                                path: key.name,
+                                shortURL: linkData.shortURL,
+                                uid: linkData.uid 
+                            });
+                        }
+                    } else {
+                        await env.EXPIRING_LINKS.delete(key.name);
+                    }
+                }
+
+                cursor = list.cursor;
+            } while (list.list_complete === false);
+        } catch (e) {
+            console.error("Error during KV listing/reading:", e);
+            // 如果 KV 操作失败，停止删除任务
+            linksToDelete = []; 
+        }
+
+        console.log(`Found ${linksToDelete.length} links to process.`);
+
+        // 4. 处理删除任务
+        const deletionPromises = linksToDelete.map(async (link) => {
+            const shortioDeleteURL = `https://api.short.io/links/${link.shortURL}`;
+
+            try {
+                const res = await fetch(shortioDeleteURL, {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: shortioSecretKey,
+                    }
+                });
+
+                if (res.ok || res.status === 204 || res.status === 404) {
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                    console.log(`✅ Success: Deleted link ${link.shortURL}`);
+                } else {
+                    const errorText = await res.text();
+                    console.error(`❌ Failed to delete link ${link.shortURL}. Status: ${res.status}. Error: ${errorText}`);
+                }
+            } catch (e) {
+                console.error(`❌ Network/API Error for ${link.shortURL}:`, e.message);
+            }
+        });
+
+        await Promise.all(deletionPromises);
+        
+        console.log(`Cleanup job completed. Total links deleted: ${deletedCount}`);
+    }
+};
         const localOffset = 8 * 60 * 60 * 1000; 
         const nowLocal = Date.now() + localOffset;
 
