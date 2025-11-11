@@ -4,7 +4,6 @@ export default {
         // === ⚙️ 配置区 (硬编码 API Key) ===
         const SHORTIO_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU";
         // ===================================
-        
         ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY));
     },
 
@@ -22,18 +21,75 @@ export default {
         const localOffset = 8 * 60 * 60 * 1000; 
         const nowLocal = Date.now() + localOffset;
 
-        console.log(`Starting scheduled cleanup job. Current time (UTC+8): ${new Date(nowLocal).toISOString()}`);
-        
         let cursor = null;
         let linksToDelete = [];
         let deletedCount = 0;
         
+        console.log(`Starting scheduled cleanup job. Time (UTC+8): ${new Date(nowLocal).toISOString()}`);
+        
         try { 
             do {
+                // 确保这里的对象结构是正确的
                 const listOptions = {
                     limit: 100,
                     cursor: cursor
                 };
+                
+                const list = await env.EXPIRING_LINKS.list(listOptions);
+                
+                for (const key of list.keys) {
+                    const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                    
+                    if (linkData && linkData.exp) {
+                        if (linkData.exp < nowLocal) {
+                            linksToDelete.push({ 
+                                path: key.name,
+                                shortURL: linkData.shortURL,
+                                uid: linkData.uid 
+                            });
+                        }
+                    } else {
+                        await env.EXPIRING_LINKS.delete(key.name);
+                    }
+                }
+
+                cursor = list.cursor;
+            } while (list.list_complete === false);
+        } catch (e) {
+            console.error("Error during KV listing/reading:", e);
+            linksToDelete = []; 
+        }
+
+        console.log(`Found ${linksToDelete.length} links to process.`);
+
+        const deletionPromises = linksToDelete.map(async (link) => {
+            const shortioDeleteURL = `https://api.short.io/links/${link.shortURL}`;
+
+            try {
+                const res = await fetch(shortioDeleteURL, {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: shortioSecretKey,
+                    }
+                });
+
+                if (res.ok || res.status === 204 || res.status === 404) {
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                } else {
+                    const errorText = await res.text();
+                    console.error(`❌ Failed to delete link ${link.shortURL}. Status: ${res.status}. Error: ${errorText}`);
+                }
+            } catch (e) {
+                console.error(`❌ Network/API Error for ${link.shortURL}:`, e.message);
+            }
+        });
+
+        await Promise.all(deletionPromises);
+        
+        console.log(`Cleanup job completed. Total links deleted: ${deletedCount}`);
+    }
+};
                 const list = await env.EXPIRING_LINKS.list(listOptions);
                 
                 for (const key of list.keys) {
