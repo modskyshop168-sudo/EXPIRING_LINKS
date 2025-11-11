@@ -1,4 +1,3 @@
-// [确保这段代码是您 index.js 文件的全部内容]
 export default {
     
     async scheduled(controller, env, ctx) {
@@ -11,7 +10,6 @@ export default {
 
     async handleCleanup(env, shortioSecretKey) {
         
-        // 1. 检查必要条件
         if (!env.EXPIRING_LINKS) {
             console.error("Cleanup aborted: KV Namespace 'EXPIRING_LINKS' is not bound.");
             return;
@@ -21,19 +19,77 @@ export default {
             return;
         }
 
-        // 2. 获取当前时间 (UTC+8)
         const localOffset = 8 * 60 * 60 * 1000; 
         const nowLocal = Date.now() + localOffset;
 
         console.log(`Starting scheduled cleanup job. Current time (UTC+8): ${new Date(nowLocal).toISOString()}`);
         
-        // 3. 逐页获取 KV 中的所有链接元数据
         let cursor = null;
         let linksToDelete = [];
         let deletedCount = 0;
         
-        try { // 添加 try-catch 确保 KV 列表操作的健壮性
+        try {
             do {
+                const listOptions = {
+                    limit: 100,
+                    cursor: cursor
+                };
+                const list = await env.EXPIRING_LINKS.list(listOptions);
+                
+                for (const key of list.keys) {
+                    const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                    
+                    if (linkData && linkData.exp) {
+                        if (linkData.exp < nowLocal) {
+                            linksToDelete.push({ 
+                                path: key.name,
+                                shortURL: linkData.shortURL,
+                                uid: linkData.uid 
+                            });
+                        }
+                    } else {
+                        await env.EXPIRING_LINKS.delete(key.name);
+                    }
+                }
+
+                cursor = list.cursor;
+            } while (list.list_complete === false);
+        } catch (e) {
+            console.error("Error during KV listing/reading:", e);
+            linksToDelete = []; 
+        }
+
+        console.log(`Found ${linksToDelete.length} links to process.`);
+
+        const deletionPromises = linksToDelete.map(async (link) => {
+            const shortioDeleteURL = `https://api.short.io/links/${link.shortURL}`;
+
+            try {
+                const res = await fetch(shortioDeleteURL, {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: shortioSecretKey,
+                    }
+                });
+
+                if (res.ok || res.status === 204 || res.status === 404) {
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                    console.log(`✅ Success: Deleted link ${link.shortURL}`);
+                } else {
+                    const errorText = await res.text();
+                    console.error(`❌ Failed to delete link ${link.shortURL}. Status: ${res.status}. Error: ${errorText}`);
+                }
+            } catch (e) {
+                console.error(`❌ Network/API Error for ${link.shortURL}:`, e.message);
+            }
+        });
+
+        await Promise.all(deletionPromises);
+        
+        console.log(`Cleanup job completed. Total links deleted: ${deletedCount}`);
+    } // 👈 这一行是 handleCleanup 的闭合
+}; // 👈 这一行是 export default 的闭合
                 const listOptions = {
                     limit: 100,
                     cursor: cursor
