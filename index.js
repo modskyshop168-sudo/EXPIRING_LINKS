@@ -1,40 +1,45 @@
 export default {
     async scheduled(controller, env, ctx) {
         const SHORTIO_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU";
-        const SHORTIO_DOMAIN = "my66.short.gy";
-        ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY, SHORTIO_DOMAIN));
+        ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY));
     },
 
-    async handleCleanup(env, shortioSecretKey, shortioDomain) {
+    async handleCleanup(env, shortioSecretKey) {
         if (!env.EXPIRING_LINKS) {
             console.error("KV namespace not bound");
             return;
         }
-        if (!shortioSecretKey) {
-            console.error("API key missing");
-            return;
-        }
 
         const now = Date.now() + (8 * 60 * 60 * 1000);
-        let linksToDelete = [];
+        let deletedCount = 0;
         
-        console.log("Starting cleanup job");
+        console.log("Starting cleanup job at: " + new Date(now).toISOString());
 
-        // 获取所有KV记录
+        // 获取第一页
         let list = await env.EXPIRING_LINKS.list();
-        let allKeys = [...list.keys];
+        let hasMore = !list.list_complete;
         
-        while (list.list_complete === false) {
-            list = await env.EXPIRING_LINKS.list({cursor: list.cursor});
-            allKeys = [...allKeys, ...list.keys];
-        }
+        while (true) {
+            // 处理当前页的keys
+            for (let i = 0; i < list.keys.length; i++) {
+                const key = list.keys[i];
+                const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                if (linkData && linkData.exp && linkData.exp < now) {
+                    try {
+                        // 删除Short.io链接
+                        const response = await fetch('https://api.short.io/links/' + linkData.shortURL, {
+                            method: "DELETE",
+                            headers: {
+                                "Authorization": shortioSecretKey
+                            }
+                        });
 
-        // 检查过期链接
-        for (const key of allKeys) {
-            const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
-            if (linkData && linkData.exp && linkData.exp < now) {
-                linksToDelete.push({
-                    path: key.name,
+                        if (response.ok || response.status === 204 || response.status === 404) {
+                            await env.EXPIRING_LINKS.delete(key.name);
+                            deletedCount++;
+                            console.log("Deleted: " + linkData.shortURL);
+                        }
+                    } catch (error)                    path: key.name,
                     shortURL: linkData.shortURL
                 });
             }
