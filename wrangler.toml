@@ -1,0 +1,43 @@
+# =========================================================================
+# 1. 链接生成 Worker 配置 (link-generator)
+#    负责处理 HTTP 请求，生成链接，并写入 KV。
+# =========================================================================
+name = "link-generator"
+main = "src/index.js" # 假设您的链接生成代码在这个文件里
+compatibility_date = "2025-11-11" # 使用当前日期
+
+# 绑定 KV Namespace
+[vars]
+# 注意：SHORTIO_SECRET_KEY 应该通过 Secrets 命令设置，而不是直接写入这里。
+# wrangler secret put SHORTIO_SECRET_KEY
+SHORTIO_DOMAIN = "my66.short.gy"
+
+# KV 绑定配置
+[[kv_namespaces]]
+binding = "EXPIRING_LINKS"
+id = "cf42c5796aeb4157a6c1f6bfc448f387" 
+# ⚠️ 注意: 请手动将 <YOUR_LINK_METADATA_KV_ID> 替换为您在 Cloudflare 创建的 KV Namespace 的实际 ID
+
+# =========================================================================
+# 2. 定时清理 Worker 配置 (cleanup-cron)
+#    负责处理定时任务，读取 KV，并删除过期链接。
+# =========================================================================
+[[workers]]
+name = "cleanup-cron"
+main = "src/index.js" # 假设您的清理代码在这个文件里
+compatibility_date = "2025-11-11"
+
+# 绑定 KV Namespace (必须是和生成 Worker 相同的 ID)
+[[workers.kv_namespaces]]
+binding = "EXPIRING_LINKS"
+id = "cf42c5796aeb4157a6c1f6bfc448f387" # ⚠️ 必须是上面那个 KV 的 ID
+
+# 设置 Cron Trigger (定时任务)
+[workers.triggers]
+# 每天 UTC 18:00 运行 (相当于 UTC+8 凌晨 2:00)
+crons = ["0 18 * * *"] 
+
+# 设置环境变量
+[workers.vars]
+SHORTIO_DOMAIN = "my66.short.gy"
+# ⚠️ 同样，SHORTIO_SECRET_KEY 必须通过 secret put 命令设置
