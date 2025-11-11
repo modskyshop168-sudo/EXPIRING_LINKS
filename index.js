@@ -1,4 +1,3 @@
-// [REPLACE ALL contents of index.js with this]
 export default {
     
     async scheduled(controller, env, ctx) {
@@ -34,6 +33,63 @@ export default {
                 const listOptions = {
                     limit: 100,
                     cursor: cursor
+                };
+                const list = await env.EXPIRING_LINKS.list(listOptions);
+                
+                for (const key of list.keys) {
+                    const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                    
+                    if (linkData && linkData.exp) {
+                        if (linkData.exp < nowLocal) {
+                            linksToDelete.push({ 
+                                path: key.name,
+                                shortURL: linkData.shortURL,
+                                uid: linkData.uid 
+                            });
+                        }
+                    } else {
+                        await env.EXPIRING_LINKS.delete(key.name);
+                    }
+                }
+
+                cursor = list.cursor;
+            } while (list.list_complete === false);
+        } catch (e) {
+            console.error("Error during KV listing/reading:", e);
+            linksToDelete = []; 
+        }
+
+        console.log(`Found ${linksToDelete.length} links to process.`);
+
+        const deletionPromises = linksToDelete.map(async (link) => {
+            const shortioDeleteURL = `https://api.short.io/links/${link.shortURL}`;
+
+            try {
+                const res = await fetch(shortioDeleteURL, {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: shortioSecretKey,
+                    }
+                });
+
+                if (res.ok || res.status === 204 || res.status === 404) {
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                    console.log(`✅ Success: Deleted link ${link.shortURL}`);
+                } else {
+                    const errorText = await res.text();
+                    console.error(`❌ Failed to delete link ${link.shortURL}. Status: ${res.status}. Error: ${errorText}`);
+                }
+            } catch (e) {
+                console.error(`❌ Network/API Error for ${link.shortURL}:`, e.message);
+            }
+        });
+
+        await Promise.all(deletionPromises);
+        
+        console.log(`Cleanup job completed. Total links deleted: ${deletedCount}`);
+    }
+}; // This is the last line containing a closing brace.
                 };
                 const list = await env.EXPIRING_LINKS.list(listOptions);
                 
