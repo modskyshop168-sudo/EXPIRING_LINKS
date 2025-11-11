@@ -1,0 +1,32 @@
+{
+  "name": "short-link-generator",
+  "compatibility_date": "2024-11-11",
+  "compatibility_flags": ["nodejs_compat"],
+  
+  // 🚀 部署配置
+  "main": "worker.js",
+  
+  // 🔧 KV 命名空间绑定
+  "kv_namespaces": [
+    {
+      "binding": "EXPIRING_LINKS",
+      "id": "your_kv_namespace_id_here", // 需要在Cloudflare面板创建后替换
+      "preview_id": "your_preview_kv_namespace_id_here"
+    }
+  ],
+  
+  // 🌐 环境变量 (在Cloudflare面板中设置敏感信息)
+  "vars": {
+    "ENVIRONMENT": "production"
+  },
+  
+  // 🔐 密钥 (在Cloudflare面板中设置)
+  // "env": {
+  //   "SHORTIO_SECRET_KEY": "sk_YPuRTT4pnbTIwgjU"
+  // },
+  
+  // 📊 资源限制
+  "limits": {
+    "cpu_ms": 50
+  }
+}
