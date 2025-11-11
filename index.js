@@ -6,35 +6,44 @@ export default {
     },
 
     async handleCleanup(env, shortioSecretKey, shortioDomain) {
-        if (!env.EXPIRING_LINKS || !shortioSecretKey || !shortioDomain) {
-            console.error("Missing required dependencies");
+        if (!env.EXPIRING_LINKS) {
+            console.error("KV namespace not bound");
+            return;
+        }
+        if (!shortioSecretKey) {
+            console.error("API key missing");
             return;
         }
 
-        const nowLocal = Date.now() + (8 * 60 * 60 * 1000);
-        let cursor = null;
+        const now = Date.now() + (8 * 60 * 60 * 1000);
         let linksToDelete = [];
         
-        console.log(`Starting cleanup job. Time (UTC+8): ${new Date(nowLocal).toISOString()}`);
+        console.log("Starting cleanup job");
 
-        // 遍历KV记录
-        do {
-            const list = await env.EXPIRING_LINKS.list({ limit: 100, cursor });
-            
-            for (const key of list.keys) {
-                const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
-                if (linkData && linkData.exp && linkData.exp < nowLocal) {
-                    linksToDelete.push({
-                        path: key.name,
-                        shortURL: linkData.shortURL,
-                        domain: linkData.domain || shortioDomain
-                    });
-                }
+        // 获取所有KV记录
+        let list = await env.EXPIRING_LINKS.list();
+        let allKeys = [...list.keys];
+        
+        while (list.list_complete === false) {
+            list = await env.EXPIRING_LINKS.list({cursor: list.cursor});
+            allKeys = [...allKeys, ...list.keys];
+        }
+
+        // 检查过期链接
+        for (const key of allKeys) {
+            const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+            if (linkData && linkData.exp && linkData.exp < now) {
+                linksToDelete.push({
+                    path: key.name,
+                    shortURL: linkData.shortURL
+                });
             }
-            
-            cursor = list.list_complete ? null : list.cursor;
-        } while (cursor);
+        }
 
+        console.log(`Found ${linksToDelete.length} expired links`);
+
+        // 删除过期链接
+        for
         console.log(`Found ${linksToDelete.length} expired links`);
 
         // 删除过期链接
