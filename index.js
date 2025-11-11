@@ -1,20 +1,23 @@
 export default {
-    
     async scheduled(controller, env, ctx) {
-        // === ⚙️ 配置区 (硬编码 API Key) ===
+        // === ⚙️ 配置区 ===
         const SHORTIO_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU";
+        const SHORTIO_DOMAIN = "my66.short.gy"; // 添加域名配置
         // ===================================
-        ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY));
+        ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY, SHORTIO_DOMAIN));
     },
 
-    async handleCleanup(env, shortioSecretKey) {
-        
+    async handleCleanup(env, shortioSecretKey, shortioDomain) {
         if (!env.EXPIRING_LINKS) {
             console.error("Cleanup aborted: KV Namespace 'EXPIRING_LINKS' is not bound.");
             return;
         }
         if (!shortioSecretKey) {
             console.error("Cleanup aborted: Short.io API Key is missing.");
+            return;
+        }
+        if (!shortioDomain) {
+            console.error("Cleanup aborted: Short.io Domain is missing.");
             return;
         }
 
@@ -26,15 +29,92 @@ export default {
         let deletedCount = 0;
         
         console.log(`Starting scheduled cleanup job. Time (UTC+8): ${new Date(nowLocal).toISOString()}`);
+        console.log(`Using domain: ${shortioDomain}`);
         
         try { 
             do {
-                // 确保这里的对象结构是正确的
                 const listOptions = {
                     limit: 100,
                     cursor: cursor
                 };
                 
+                const list = await env.EXPIRING_LINKS.list(listOptions);
+                
+                for (const key of list.keys) {
+                    const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                    
+                    if (linkData && linkData.exp) {
+                        if (linkData.exp < nowLocal) {
+                            linksToDelete.push({ 
+                                path: key.name,
+                                shortURL: linkData.shortURL,
+                                uid: linkData.uid,
+                                domain: linkData.domain || shortioDomain // 使用存储的域名或默认域名
+                            });
+                        }
+                    } else {
+                        // 数据格式不正确，直接删除KV记录
+                        await env.EXPIRING_LINKS.delete(key.name);
+                        console.log(`Deleted invalid KV entry: ${key.name}`);
+                    }
+                }
+
+                cursor = list.list_complete ? null : list.cursor;
+            } while (cursor);
+        } catch (e) {
+            console.error("Error during KV listing/reading:", e);
+            return;
+        }
+
+        console.log(`Found ${linksToDelete.length} expired links to process.`);
+
+        if (linksToDelete.length === 0) {
+            console.log("No expired links found. Cleanup job completed.");
+            return;
+        }
+
+        const deletionPromises = linksToDelete.map(async (link) => {
+            // 构建完整的删除URL，包含域名信息（如果需要）
+            const shortioDeleteURL = `https://api.short.io/links/${link.shortURL}`;
+            
+            // 也可以在请求头或参数中指定域名（根据Short.io API文档）
+            const deletePayload = {
+                domain: link.domain || shortioDomain
+            };
+
+            try {
+                const res = await fetch(shortioDeleteURL, {
+                    method: "DELETE",
+                    headers: {
+                        "Authorization": shortioSecretKey,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(deletePayload)
+                });
+
+                if (res.ok || res.status === 204) {
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                    console.log(`✅ Successfully deleted link: ${link.shortURL} from domain: ${link.domain || shortioDomain}`);
+                } else if (res.status === 404) {
+                    // 链接在Short.io上不存在，但我们需要清理KV记录
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                    console.log(`✅ Link not found on Short.io, cleaned KV record: ${link.shortURL}`);
+                } else {
+                    const errorText = await res.text();
+                    console.error(`❌ Failed to delete link ${link.shortURL}. Status: ${res.status}. Error: ${errorText}`);
+                }
+            } catch (e) {
+                console.error(`❌ Network/API Error for ${link.shortURL}:`, e.message);
+            }
+        });
+
+        await Promise.allSettled(deletionPromises);
+        
+        console.log(`Cleanup job completed. Total links processed: ${deletedCount}/${linksToDelete.length}`);
+    }
+};                
                 const list = await env.EXPIRING_LINKS.list(listOptions);
                 
                 for (const key of list.keys) {
