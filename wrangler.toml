@@ -2,7 +2,7 @@
 # 专用于定时清理 Worker 配置 (cleanup-cron)
 # =========================================================================
 name = "cleanup-cron"
-main = "src/index.js" # 假设您将清理代码放在了 src/index.js 文件中
+main = "index.js" # 假设您将清理代码放在了 src/index.js 文件中
 compatibility_date = "2025-11-11"
 
 # 绑定 KV Namespace
