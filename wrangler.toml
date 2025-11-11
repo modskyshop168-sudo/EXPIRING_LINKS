@@ -2,22 +2,20 @@
 # 专用于定时清理 Worker 配置 (cleanup-cron)
 # =========================================================================
 name = "cleanup-cron"
-main = "index.js" # 假设您将清理代码放在了 src/index.js 文件中
+main = "index.js" 
 compatibility_date = "2025-11-11"
 
 # 绑定 KV Namespace
-# ⚠️ 确保这个 KV 实例与您的链接生成 Worker 写入的 KV 实例是同一个
 [[kv_namespaces]]
 binding = "EXPIRING_LINKS"
 id = "cf42c5796aeb4157a6c1f6bfc448f387" 
-# 替换为您在 Cloudflare 创建的 KV Namespace 的实际 ID。
+# 确保这个 ID 和您的链接生成 Worker 使用的 ID 相同
 
 # 设置 Cron Trigger (定时任务)
 [triggers]
-# 每天 UTC 18:00 运行 
-# (相当于 UTC+8 [新加坡/马来西亚时间] 凌晨 2:00)
 crons = ["0 18 * * *"] 
 
-# 设置环境变量 (只需要域名，因为 Secret Key 已经硬编码在代码里)
+# 设置环境变量 (包含硬编码的 API Key)
 [vars]
 SHORTIO_DOMAIN = "my66.short.gy"
+SHORTIO_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU" 
