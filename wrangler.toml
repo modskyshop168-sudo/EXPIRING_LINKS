@@ -9,7 +9,7 @@ compatibility_date = "2025-11-11"
 # ⚠️ 确保这个 KV 实例与您的链接生成 Worker 写入的 KV 实例是同一个
 [[kv_namespaces]]
 binding = "EXPIRING_LINKS"
-id = "<YOUR_LINK_METADATA_KV_ID>" 
+id = "cf42c5796aeb4157a6c1f6bfc448f387" 
 # 替换为您在 Cloudflare 创建的 KV Namespace 的实际 ID。
 
 # 设置 Cron Trigger (定时任务)
