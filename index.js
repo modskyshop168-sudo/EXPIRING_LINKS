@@ -1,39 +1,114 @@
 /**
- * Worker: Short.io Link Generator (with KV metadata storage for Cron cleanup)
- * Domain: my66.short.gy
+ * Cloudflare Worker: Short.io Expired Link Cleanup Cron
  *
- * Required Cloudflare Bindings:
- * 1. KV Namespace: EXPIRING_LINKS
- * 2. Environment Variable (Secret): SHORTIO_SECRET_KEY (Value: sk_YPuRTT4pnbTIwgjU)
+ * ⚠️ 警告: 此版本已将 API 密钥硬编码到代码中。
+ *
+ * 必须的 Cloudflare Bindings:
+ * 1. KV Namespace: 变量名必须是 EXPIRING_LINKS (绑定到链接生成 Worker 写入的同一个实例)
  */
 export default {
-  async fetch(request, env, ctx) {
-    // === ⚙️ 配置区 ===
-    const SHORTIO_DOMAIN = "my66.short.gy"; 
-    const FALLBACK_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU";
-    const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || FALLBACK_SECRET_KEY;
-    // =================
+    /**
+     * scheduled 函数是 Cron Trigger 触发时的入口点。
+     */
+    async scheduled(controller, env, ctx) {
+        
+        // === ⚙️ 配置区 (硬编码 API Key) ===
+        // ⚠️ 警告: 密钥已硬编码，存在安全风险。
+        const SHORTIO_SECRET_KEY = "sk_YPuRTT4pnbTIwgjU";
+        // ===================================================
+        
+        // 使用 ctx.waitUntil 确保 Worker 在所有异步任务完成之前不会退出
+        ctx.waitUntil(this.handleCleanup(env, SHORTIO_SECRET_KEY));
+    },
 
-    // ✅ CORS 处理
-    if (request.method === "OPTIONS") {
-      return new Response("", { headers: corsHeaders() });
+    async handleCleanup(env, shortioSecretKey) {
+        
+        // 1. 检查必要条件
+        if (!env.EXPIRING_LINKS) {
+            console.error("Cleanup aborted: KV Namespace 'EXPIRING_LINKS' is not bound.");
+            return;
+        }
+        if (!shortioSecretKey) {
+            console.error("Cleanup aborted: Short.io API Key is missing (should not happen in this version).");
+            return;
+        }
+
+        // 2. 获取当前时间 (UTC+8，用于和 exp 时间戳比较)
+        const localOffset = 8 * 60 * 60 * 1000; 
+        const nowLocal = Date.now() + localOffset;
+
+        console.log(`Starting scheduled cleanup job. Current time (UTC+8): ${new Date(nowLocal).toISOString()}`);
+        
+        // 3. 逐页获取 KV 中的所有链接元数据 (支持大量链接)
+        let cursor = null;
+        let linksToDelete = [];
+        let deletedCount = 0;
+        
+        do {
+            const listOptions = {
+                limit: 100,
+                cursor: cursor
+            };
+            const list = await env.EXPIRING_LINKS.list(listOptions);
+            
+            for (const key of list.keys) {
+                const linkData = await env.EXPIRING_LINKS.get(key.name, "json");
+                
+                if (linkData && linkData.exp) {
+                    // 如果链接的过期时间戳小于当前时间 (已过期)
+                    if (linkData.exp < nowLocal) {
+                        linksToDelete.push({ 
+                            path: key.name,     // 短链接路径，如 "id12345"
+                            shortURL: linkData.shortURL, // 完整的短链接，用于 Short.io API
+                            uid: linkData.uid 
+                        });
+                    }
+                } else {
+                    // 如果 KV 记录格式损坏，将其从 KV 删除
+                    await env.EXPIRING_LINKS.delete(key.name);
+                }
+            }
+
+            cursor = list.cursor;
+        } while (list.list_complete === false);
+
+        console.log(`Found ${linksToDelete.length} links to process.`);
+
+        // 4. 处理删除任务
+        const deletionPromises = linksToDelete.map(async (link) => {
+            
+            // Short.io API 删除链接需要完整的短链接 URL
+            const shortioDeleteURL = `https://api.short.io/links/${link.shortURL}`;
+
+            try {
+                const res = await fetch(shortioDeleteURL, {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: shortioSecretKey,
+                    }
+                });
+
+                // Short.io 删除成功是 204 (No Content) 或 404 (Not Found，也视为成功清理)
+                if (res.ok || res.status === 204 || res.status === 404) {
+                    // 从 KV 中删除记录
+                    await env.EXPIRING_LINKS.delete(link.path);
+                    deletedCount++;
+                    console.log(`✅ Success: Deleted link ${link.shortURL} (UID: ${link.uid || 'N/A'})`);
+                } else {
+                    const errorText = await res.text();
+                    console.error(`❌ Failed to delete link ${link.shortURL}. Status: ${res.status}. Error: ${errorText}`);
+                }
+            } catch (e) {
+                console.error(`❌ Network/API Error for ${link.shortURL}:`, e.message);
+            }
+        });
+
+        // 等待所有删除任务完成
+        await Promise.all(deletionPromises);
+        
+        console.log(`Cleanup job completed. Total links deleted: ${deletedCount}`);
     }
-
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", {
-        status: 405,
-        headers: corsHeaders(),
-      });
-    }
-
-    try {
-      if (!SHORTIO_SECRET_KEY) throw new Error("Missing Short.io API Key.");
-      if (!env.EXPIRING_LINKS) console.warn("KV Namespace 'EXPIRING_LINKS' is not bound. Auto-cleanup functionality will be disabled.");
-
-
-      // 📦 读取请求体
-      const { longURL, redirect } = await request.json();
-      if (!longURL) throw new Error("Missing longURL");
+};
 
 
       // === 🧠 智能标题生成和 Exp 时间提取 ===
